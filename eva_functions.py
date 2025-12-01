@@ -1,9 +1,16 @@
 import numpy as np
 import pandas as pd
+import matplotlib.cm as cm
 from scipy.signal import find_peaks
 from scipy.stats import norm, gumbel_r, genpareto
 from scipy.stats import genextreme as gev
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta
+#import sys
+#np.set_printoptions(threshold=sys.maxsize)
+
 
 class Bootstrap_fit:
     n_bootstraps = 200
@@ -125,20 +132,740 @@ def tsEasyParseNamedArgs(args, argStruct):
     return argStruct
     
 
-def tsEvaPlotReturnLevelsGEV(epsilon, sigma, mu, epsilonStdErr, sigmaStdErr, muStdErr):
+def tsEvaPlotTransfToStat(timeStamps, statSeries, srsmean, stdDev, thirdMom, fourthMom, **kwargs):
+    axisFontSize=kwargs.get('axisFontSize', 20)
+    legendFontSize=kwargs.get('legendFontSize', 20)
+    xtick=kwargs.get('xtick',[])
+    figPosition=kwargs.get('figPosition',[x + 10 for x in [0, 0, 1450, 700]])
+    minyear=kwargs.get('minyear',1)
+    maxyear=kwargs.get('maxyear',9999)
+    dateformat=kwargs.get('dateformat','%Y')
+    legendLocation=kwargs.get('legendLocation','upper right')
+
+    # Update args with passed values
+    for key, value in kwargs.items():
+        if (key=='axisFontSize'):
+            axisFontSize=value
+        if (key=='legendFontSize'):
+            legendFontSize=value
+        if (key=='xtick'):
+            xtick=value
+        if (key=='figPosition'):
+            figPosition=value
+        if (key=='minyear'):
+            minyear=value
+        if (key=='maxyear'):
+            maxyear=value
+        if (key=='dateformat'):
+            dateformat=value
+        if (key=='legendLocation'):
+            legendLocation=value
+
+
+    min_date=datetime(minyear, 1, 1)
+    max_date=datetime(maxyear, 1, 1)
+    minTS=min_date.toordinal()
+    maxTS=max_date.toordinal()
+
+    statSeries = statSeries[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    srsmean = srsmean[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    stdDev = stdDev[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    thirdMom = thirdMom[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    fourthMom = fourthMom[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    timeStamps = timeStamps[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+
+    minTS = min(timeStamps)
+    maxTS = max(timeStamps)
+    fig, ax = plt.subplots(figsize=(figPosition[2] / 100,figPosition[3] / 100))
+    phandles = [fig]
+    
+    psrs = plt.plot(timeStamps, statSeries)
+#    hold("on")
+    pmean = plt.plot(timeStamps, srsmean, "--", color="k", linewidth=3)
+    pStdDev = plt.plot(timeStamps, stdDev, "--", color=[0.5, 0, 0], linewidth=3)
+    pThirdMom = plt.plot(timeStamps, thirdMom, color=[0, 0, 0.5], linewidth=3)
+    pFourthMom = plt.plot(timeStamps, fourthMom, color=[0, 0.4, 0], linewidth=3)
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(dateformat))
+    ax.set_xlim([minTS, maxTS])
+    pleg = plt.legend([psrs, pmean, pStdDev, pThirdMom, pFourthMom],["Normalized series", "Mean", "Std. dev.", "Skewness", "Kurtosis"],fontsize=legendFontSize,loc=legendLocation)
+    ax.tick_params(labelsize=axisFontSize)
+
+    if xtick:
+        ax.set_xticks(xtick)
+        ax.set_xticklabels([datetime.fromordinal(int(t)).strftime(dateformat) for t in xtick])
+
+    # Turn grid on
+    ax.grid(True)
+    plt.tight_layout()
+        
+    phandles = [fig, psrs, pmean, pStdDev, pStdDev, pThirdMom, pFourthMom, pleg]
+    return phandles
+
+def tsEvaPlotTransfToStatFromAnalysisObj(nonStationaryEvaParams, stationaryTransformData, **kwargs):
+    timeStamps = stationaryTransformData.timeStamps
+    series = stationaryTransformData.stationarySeries
+    srmean = np.zeros_like(series)
+    srstddev = np.ones_like(series)
+    st3mom = stationaryTransformData.statSer3Mom
+    st4mom = stationaryTransformData.statSer4Mom
+    
+    minyear = kwargs.get('minyear',1)
+    maxyear = kwargs.get('maxyear',9999)
+    dateFormat = kwargs.get('dateformat','%Y')
+
+    for key, value in kwargs.items():
+        if (key=='minyear'):
+            minyear=value
+        if (key=='maxyear'):
+            maxyear=value
+        if (key=='dateformat'):
+            dateformat=value
+
+    phandles = tsEvaPlotTransfToStat(timeStamps, series, srmean, srstddev, st3mom, st4mom, **kwargs)
+    return phandles
+
+def tsEvaPlotGEVImageSc(Y, timeStamps, epsilon, sigma, mu, **kwargs):
+    avgYearLength = 365.2425
+    nyears = (max(timeStamps) - min(timeStamps)) / avgYearLength
+    nelmPerYear = len(timeStamps) / nyears
+
+    # Default arguments
+    
+    nPlottedTimesByYear=kwargs.get('nPlottedTimesByYear',min(360, round(nelmPerYear)))
+    ylabel=kwargs.get('ylabel','levels (m)')
+    zlabel=kwargs.get('zlabel','pdf')
+    minYear=kwargs.get('minYear',1)
+    maxYear=kwargs.get('maxYear',9999)
+    dateformat=kwargs.get('dateformat','%Y')
+    axisFontSize=kwargs.get('axisFontSize',22)
+    labelFontSize=kwargs.get('labelFontSize',28)
+    colormap=kwargs.get('colormap', plt.cm.hot_r)
+    plotColorbar=kwargs.get('plotColorbar',True)
+    figPosition=kwargs.get('figPosition',[x + 10 for x in [0, 0, 1450, 700]])
+    xtick=kwargs.get('xtick',[])
+    ax=kwargs.get('ax',None)
+    
+    # Update args with passed values
+    for key, value in kwargs.items():
+        if (key=='nPlottedTimesByYear'):
+            nPlottedTimesByYear=value
+        if (key=='ylabel'):
+            ylabel=value
+        if (key=='zlabel'):
+            zlabel=value
+        if (key=='minYear'):
+            minYear=value
+        if (key=='maxYear'):
+            maxYear=value
+        if (key=='dateformat'):
+            dateformat=value
+        if (key=='axisFontSize'):
+            axisFontSize=value
+        if (key=='labelFontSize'):
+            labelFontSize=value
+        if (key=='colormap'):
+            colormap=value
+        if (key=='plotColorbar'):
+            plotColorbar=value
+        if (key=='figPosition'):
+            figPosition=value
+        if (key=='xtick'):
+            xtick=value
+        if (key=='ax'):
+            ax=value
+
+    minTS = mdates.date2num(datetime(minYear, 1, 1))
+    maxTS = mdates.date2num(datetime(maxYear, 1, 1))
+    sigma = sigma[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    mu = mu[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    timeStamps = timeStamps[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+
+
+    # Handle figure and axes
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(figPosition[2]/100, figPosition[3]/100))
+        phandles = [fig]
+    else:
+        phandles = [ax]
+
+    # Setup time range
+    L = len(timeStamps)
+    minTS = timeStamps[0]
+    maxTS = timeStamps[-1]
+    
+    npdf = int(np.ceil(((maxTS - minTS) / avgYearLength) * nPlottedTimesByYear))
+    navg = int(np.ceil(L / npdf))
+
+    plotSLength = npdf * navg
+    timeStamps_plot = np.linspace(minTS, maxTS, plotSLength)
+
+    # Handle epsilon values
+    if isinstance(epsilon, (list, np.ndarray)):
+        if len(epsilon) == 1:
+            epsilon0 = np.ones(npdf) * epsilon
+    else:
+        epsilon_ = np.full(npdf * navg, np.nan)
+        epsilon_[:L] = epsilon
+        epsilonMtx = epsilon_.reshape(navg, -1)
+        epsilon0 = np.nanmean(epsilonMtx, axis=0).T
+
+    # Interpolation for sigma and mu
+    sigma_ = np.interp(timeStamps_plot, timeStamps, sigma)
+    sigmaMtx = sigma_.reshape(-1, navg)
+
+    if sigmaMtx.shape[0] > 1:
+        sigma0 = np.nanmean(sigmaMtx, axis=1)
+        sigma0 = sigma0.T
+    else:
+        sigma0 = np.transpose(sigmaMtx)
+#    SigmaMtx e' uguale a Matlab, ma sigma0 no!
+    
+    mu_ = np.interp(timeStamps_plot, timeStamps, mu)
+    muMtx = mu_.reshape(-1, navg)
+    if muMtx.shape[0] > 1:
+        mu0 = np.nanmean(muMtx, axis=1)
+        mu0 = mu0.T  # Transpose
+    else:
+        mu0 = muMtx.T
+
+    # Create grid for GEV parameters
+    X_mesh, epsilonMtx = np.meshgrid(Y, epsilon0)
+    _, sigmaMtx = np.meshgrid(Y, sigma0)
+    XMtx, muMtx = np.meshgrid(Y, mu0)
+    
+    # Compute the GEV PDF
+    gevvar = gev.pdf(XMtx, c=epsilonMtx, loc=muMtx, scale=sigmaMtx)
+    
+    # Plotting
+    gevvar_transposed = gevvar.T
+    
+    cax = ax.imshow(gevvar_transposed, aspect='auto', extent=[timeStamps_plot[0], timeStamps_plot[-1], Y[0], Y[-1]])
+    phandles.append(cax)
+
+    # Formatting the axes
+    ax.set_xlabel('Year', fontsize=labelFontSize)
+    ax.set_ylabel(ylabel, fontsize=labelFontSize)
+    ax.tick_params(axis='both', labelsize=axisFontSize)
+
+    # Date formatting
+    ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter(dateformat))
+    ax.grid(True)
+
+    # Adjust xticks if provided
+    if xtick:
+        ax.set_xticks(xtick)
+        ax.set_xticklabels([datetime.fromordinal(int(t)).strftime(dateformat) for t in xtick])
+        
+    # Colorbar
+    if plotColorbar:
+        cbar = fig.colorbar(cax, ax=ax)
+        cbar.set_label(zlabel, fontsize=labelFontSize)
+
+    return phandles
+
+def tsEvaPlotGPDImageSc(Y, timeStamps, epsilon, sigma, threshold, **kwargs):
+    avgYearLength = 365.2425
+    nyears = (max(timeStamps) - min(timeStamps)) / avgYearLength
+    nelmPerYear = len(timeStamps) / nyears
+
+    # Default arguments
+    
+    nPlottedTimesByYear = kwargs.get('nPlottedTimesByYear',min(360, round(nelmPerYear)))
+    ylabel = kwargs.get('ylabel','levels (m)')
+    zlabel = kwargs.get('zlabel','pdf')
+    minYear = kwargs.get('minYear',1)
+    maxYear = kwargs.get('maxYear',9999)
+    dateFormat = kwargs.get('dateformat','%Y')
+    axisFontSize = kwargs.get('axisFontSize',22)
+    colormap=kwargs.get('colormap', plt.cm.hot_r)
+    plotColorbar=kwargs.get('plotColorbar',True)
+    labelFontSize = kwargs.get('labelFontSize',28)
+    figPosition = kwargs.get('figPosition',[x + 10 for x in [0, 0, 1450, 700]])
+    xtick = kwargs.get('xtick',[])
+    ax=kwargs.get('ax',None)
+    
+    for key, value in kwargs.items():
+        if (key=='nPlottedTimesByYear'):
+            nPlottedTimesByYear=value
+        if (key=='ylabel'):
+            ylabel=value
+        if (key=='zlabel'):
+            zlabel=value
+        if (key=='minYear'):
+            minYear=value
+        if (key=='maxYear'):
+            maxYear=value
+        if (key=='dateformat'):
+            dateformat=value
+        if (key=='axisFontSize'):
+            axisFontSize=value
+        if (key=='labelFontSize'):
+            labelFontSize=value
+        if (key=='colormap'):
+            colormap=value
+        if (key=='plotColorbar'):
+            plotColorbar=value
+        if (key=='figPosition'):
+            figPosition=value
+        if (key=='xtick'):
+            xtick=value
+        if (key=='ax'):
+            ax=value
+
+    minTS = mdates.date2num(datetime(minYear, 1, 1))
+    maxTS = mdates.date2num(datetime(maxYear, 1, 1))
+    sigma = sigma[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    threshold = threshold[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    timeStamps = timeStamps[(timeStamps >= minTS) & (timeStamps <= maxTS)]
+    
+    # Handle figure and axes
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(figPosition[2]/100, figPosition[3]/100))
+        phandles = [fig]
+    else:
+        phandles = [ax]
+
+    L = len(timeStamps)
+    minTS = timeStamps[0]
+    maxTS = timeStamps[-1]
+
+    npdf = int(np.ceil(((maxTS - minTS) / avgYearLength) * nPlottedTimesByYear))
+    navg = int(np.ceil(L / npdf))
+
+    plotSLength = npdf * navg
+    timeStamps_plot = np.linspace(minTS, maxTS, plotSLength)
+
+    # Handle epsilon values
+    if isinstance(epsilon, (list, np.ndarray)):
+        if len(epsilon) == 1:
+            epsilon0 = np.ones(npdf) * epsilon
+    else:
+        epsilon_ = np.full(npdf * navg, np.nan)
+        epsilon_[:L] = epsilon
+        epsilonMtx = epsilon_.reshape(navg, -1)
+        epsilon0 = np.nanmean(epsilonMtx, axis=0).T
+
+    sigma_ = np.interp(timeStamps_plot, timeStamps, sigma)
+    sigmaMtx = sigma_.reshape(-1, navg)
+
+    if sigmaMtx.shape[0] > 1:
+        sigma0 = np.nanmean(sigmaMtx, axis=1)
+        sigma0 = sigma0.T
+    else:
+        sigma0 = np.transpose(sigmaMtx)
+
+    threshold_ = np.interp(timeStamps_plot, timeStamps, threshold)
+    thresholdMtx = threshold_.reshape(-1, navg)
+    if thresholdMtx.shape[0] > 1:
+        threshold0 = np.nanmean(thresholdMtx, axis=1)
+        threshold0 = threshold0.T
+    else:
+        threshold0 = thresholdMtx.T
+    
+    _, epsilonMtx = np.meshgrid(Y, epsilon0)
+    _, sigmaMtx = np.meshgrid(Y, sigma0)
+    XMtx, thresholdMtx = np.meshgrid(Y, threshold0)
+    
+    gevvar = genpareto.pdf(XMtx-thresholdMtx, c=epsilonMtx, scale=sigmaMtx)
+    
+    # Plotting
+    gevvar_transposed = gevvar.T
+    cax = ax.imshow(gevvar_transposed, aspect='auto', cmap=colormap, extent=[timeStamps_plot[0],timeStamps_plot[-1], Y[0], Y[-1]])
+    phandles.append(cax)
+
+    # Formatting the axes
+    ax.set_xlabel('Year', fontsize=labelFontSize)
+    ax.set_ylabel(ylabel, fontsize=labelFontSize)
+    ax.tick_params(axis='both', labelsize=axisFontSize)
+
+    # Date formatting
+    ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter(dateformat))
+    ax.grid(True)
+
+    # Adjust xticks if provided
+    if xtick:
+        ax.set_xticks(xtick)
+        ax.set_xticklabels([datetime.fromordinal(int(t)).strftime(dateformat) for t in xtick])
+        
+    # Colorbar
+    if plotColorbar:
+        cbar = fig.colorbar(cax, ax=ax)
+        cbar.set_label(zlabel, fontsize=labelFontSize)
+
+    # colormap(flipud(hot))
+    # set(gca, "YDir", "normal")
+    # datetick("x", args.dateFormat)
+    # if _not(isempty(args.xtick)):
+    #     set(gca, "xtick", args.xtick)
+    #     set(gca, "xticklabel", datestr(args.xtick, args.dateFormat))
+    # xlim(M[[min(timeStamps_plot), max(timeStamps_plot)]])
+    # grid("on")
+    # clb = copy(colorbar)
+    # ylabel(clb, args.zlabel, "fontsize", args.labelFontSize)
+    # ylabel(args.ylabel, "fontsize", args.labelFontSize)
+    # set(gca, "fontsize", args.axisFontSize)
+    # set(f, "paperpositionmode", "auto")
+    return phandles
+
+def tsEvaPlotGEVImageScFromAnalysisObj(X, nonStationaryEvaParams, stationaryTransformData, **kwargs):
+    
+    timeStamps = stationaryTransformData.timeStamps
+    epsilon = -nonStationaryEvaParams[0]['parameters']['epsilon']
+    sigma = nonStationaryEvaParams[0]['parameters']['sigma']
+    mu = nonStationaryEvaParams[0]['parameters']['mu']
+    
+    phandles = tsEvaPlotGEVImageSc(X, timeStamps, epsilon, sigma, mu, **kwargs)
+    
+    
+    return phandles
+
+def tsEvaPlotGPDImageScFromAnalysisObj(Y, nonStationaryEvaParams, stationaryTransformData, **kwargs):
+    timeStamps = stationaryTransformData.timeStamps
+    epsilon = nonStationaryEvaParams[1]['parameters']['epsilon']
+    sigma = nonStationaryEvaParams[1]['parameters']['sigma']
+    threshold = nonStationaryEvaParams[1]['parameters']['threshold']
+    phandles = tsEvaPlotGPDImageSc(Y, timeStamps, epsilon, sigma, threshold, **kwargs)
+    
+    return phandles
+
+def tsEvaPlotSeriesTrendStdDev(timeStamps, series, trend, stdDev, **kwargs):
+    confidenceAreaColor = kwargs.get('confidenceAreaColor',np.array([0.741, 0.988, 0.788]))
+    confidenceBarColor = kwargs.get('confidenceBarColor',np.array([0.133, 0.545, 0.133]))
+    seriesColor = kwargs.get('seriesColor',[1, 0.5, 0.5])
+    trendColor = kwargs.get('trendColor','k')
+    xlabel = kwargs.get('xlabel','')
+    ylabel = kwargs.get('ylabel','level (m)')
+    minYear = kwargs.get('minYear',1)
+    maxYear = kwargs.get('maxYear',9999)
+    title = kwargs.get('title','')
+    axisFontSize = kwargs.get('axisFontSize',22)
+    labelFontSize = kwargs.get('labelFontSize',28)
+    titleFontSize = kwargs.get('titleFontSize',30)
+    legendLocation = kwargs.get('legendLocation','upper left')
+    dateformat = kwargs.get('dateformat','%Y')
+    figPosition = kwargs.get('figPosition',[10, 10, 1300, 700])
+    verticalRange = kwargs.get('verticalRange',None)
+    statsTimeStamps = kwargs.get('statsTimeStamps',timeStamps)
+    xtick = kwargs.get('xtick',[])
+    
+    for key, value in kwargs.items():
+        if (key=='confidenceAreaColor'): 
+            confidenceAreaColor=value
+        if (key=='confidenceBarColor'): 
+            confidenceBarColor=value
+        if (key=='seriesColor'): 
+            seriesColor=value
+        if (key=='trendColor'): 
+            trendColor=value
+        if (key=='xlabel'): 
+            xlabel=value
+        if (key=='ylabel'): 
+            ylabel=value
+        if (key=='minYear'): 
+            minYear=value
+        if (key=='maxYear'): 
+            maxYear=value
+        if (key=='title'): 
+            title=value
+        if (key=='axisFontSize'): 
+            axisFontSize=value
+        if (key=='labelFontSize'): 
+            labelFontSize=value
+        if (key=='titleFontSize'): 
+            titleFontSize=value
+        if (key=='legendLocation'): 
+            legendLocation=value
+        if (key=='dateformat'): 
+            dateformat=value
+        if (key=='figPosition'): 
+            figPosition=value
+        if (key=='verticalRange'): 
+            verticalRange=value
+        if (key=='statsTimeStamps'): 
+            statsTimeStamps=value
+        if (key=='xtick'):
+            xtick=value
+
+    # Convert years to matplotlib date numbers for filtering
+    minTS =  mdates.date2num(datetime(minYear, 1, 1))
+    maxTS =  mdates.date2num(datetime(maxYear, 1, 1))
+
+    # Filtering data
+    timeFilter = (timeStamps >= minTS) & (timeStamps <= maxTS)
+    statsTSFilter = (statsTimeStamps >= minTS) & (statsTimeStamps <= maxTS)
+
+    filtered_timeStamps = timeStamps[timeFilter]
+    filtered_series = series[timeFilter]
+
+    filtered_statsTS = statsTimeStamps[statsTSFilter]
+    filtered_trend = trend[statsTSFilter]
+    filtered_stdDev = stdDev[statsTSFilter]
+
+    upCI = filtered_trend + filtered_stdDev
+    downCI = filtered_trend - filtered_stdDev
+
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(figPosition[2] / 100,figPosition[3] / 100))
+    phandles = [fig]
+
+    # Plot series
+    line_series, = ax.plot(filtered_timeStamps, filtered_series, color=seriesColor, linewidth=0.5)
+    
+    phandles.append(line_series)
+
+    # Date formatting on x-axis
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(dateformat))
+
+    if xtick:
+        ax.set_xticks(xtick)
+        ax.set_xticklabels([datetime.fromordinal(int(t)).strftime(dateformat) for t in xtick])
+
+    ax.set_xlim([np.min(filtered_timeStamps), np.max(filtered_timeStamps)])
+
+    # Fill confidence interval area
+    xcibar = np.concatenate([filtered_statsTS, filtered_statsTS[::-1]])
+    ycibar = np.concatenate([upCI, downCI[::-1]])
+
+    fill_poly = ax.fill(xcibar, ycibar, color=confidenceAreaColor, alpha=0.2, edgecolor='none')
+    phandles.append(fill_poly[0])
+    
+    # Plot trend and confidence bars
+    line_trend, = ax.plot(filtered_statsTS, filtered_trend, color=trendColor, linewidth=3)
+    phandles.append(line_trend)
+
+    line_upCI, = ax.plot(filtered_statsTS, upCI, color=confidenceBarColor, linewidth=2)
+    phandles.append(line_upCI)
+
+    line_downCI, = ax.plot(filtered_statsTS, downCI, color=confidenceBarColor, linewidth=2)
+    phandles.append(line_downCI)
+
+    ax.grid(True)
+
+    if verticalRange is not None and len(verticalRange) == 2:
+        ax.set_ylim(verticalRange)
+
+    ax.legend([line_series, line_trend, line_downCI], ['Series', 'Trend', 'Std dev'],
+              fontsize=labelFontSize, loc=legendLocation)
+
+    ax.tick_params(axis='both', which='major', labelsize=axisFontSize)
+    ax.set_xlabel(xlabel, fontsize=labelFontSize)
+    ax.set_ylabel(ylabel, fontsize=labelFontSize)
+
+    if title:
+        ax.set_title(title, fontsize=titleFontSize)
+
+    fig.tight_layout()
+
+    return phandles
+
+def tsEvaPlotGEV3DFromAnalysisObj(X, nonStationaryEvaParams, stationaryTransformData, **kwargs):
+    timeStamps = stationaryTransformData.timeStamps
+    epsilon = nonStationaryEvaParams[0]['parameters']['epsilon']
+    sigma = nonStationaryEvaParams[0]['parameters']['sigma']
+    mu = nonStationaryEvaParams[0]['parameters']['mu']
+
+    phandles = tsEvaPlotGEV3D(X, timeStamps, epsilon, sigma, mu, **kwargs)
+
+    return phandles
+
+def tsEvaPlotGEV3D(X, timeStamps, epsilon, sigma, mu, **kwargs):
+    avgYearLength = 365.2425
+    # Default arguments
+    nPlottedTimesByYear=kwargs.get('nPlottedTimesByYear', 180)
+    xlabel=kwargs.get('xlabel','levels (m)')
+    ylabel=kwargs.get('ylabel','year')
+    zlabel= kwargs.get('zlabel','pdf')
+    minyear= kwargs.get('minyear',1)
+    maxyear= kwargs.get('maxyear',9999)
+    dateformat= kwargs.get('dateformat','%Y')
+    axisFontSize= kwargs.get('axisFontSize', 22)
+    labelFontSize=kwargs.get('labelFontSize', 28)
+
+        # Update args with passed values
+    for key, value in kwargs.items():
+        if (key=='nPlottedTimesByYear'):
+            nPlottedTimesByYear=value
+        if (key=='xlabel'):
+            xlabel=value
+        if (key=='ylabel'):
+            ylabel=value
+        if (key=='zlabel'):
+            zlabel=value
+        if (key=='minyear'):
+            minyear=value
+        if (key=='maxyear'):
+            maxyear=value
+        if (key=='dateformat'):
+            dateformat=value
+        if (key=='axisFontSize'):
+            axisFontSize=value
+        if (key=='legendFontSize'):
+            legendFontSize=value
+
+            
+    min_date=datetime(minyear+1, 1, 1)
+    max_date=datetime(maxyear+1, 1, 1)
+    minTS=min_date.toordinal()
+    maxTS=max_date.toordinal()
+    
+    # Ensure timeStamps are in datetime
+    # If they are numeric, convert accordingly
+    # For demonstration, assume they are datetime objects
+    mask = (timeStamps >= minTS) & (timeStamps <= maxTS)
+    sigma = sigma[mask]
+    mu = mu[mask]
+    timeStamps = timeStamps[mask]
+
+    fig = plt.figure()
+    phandles = [fig]
+    fig.set_size_inches(13, 7)
+
+    L = len(timeStamps)
+    minTS = timeStamps[0]
+    maxTS = timeStamps[-1]
+
+    # Compute number of points to plot
+    avgYearLength = 365.2425
+    total_years = (maxTS - minTS)/avgYearLength
+    npdf = int(np.ceil(total_years * nPlottedTimesByYear))
+    navg = int(np.ceil(L / npdf))
+    
+    plotSLength = npdf * navg
+    timeStamps_plot = np.linspace(minTS, maxTS, plotSLength)
+    # Handle epsilon
+    if np.shape(epsilon) == ():  # scalar
+        epsilon0 = np.ones(npdf) * epsilon
+    else:
+        epsilon_ = np.full(npdf * navg, np.nan)
+        epsilon_[:L] = epsilon.flatten()
+        epsilonMtx = np.reshape(epsilon_, (navg, -1))
+        epsilon0 = np.nanmean(epsilonMtx, axis=0)
+
+
+    # Interpolate sigma and mu at plot points
+
+    # Get interpolated values at desired points
+    sigma_interp = interp1d([dt for dt in timeStamps], sigma, bounds_error=False, fill_value="extrapolate")
+    sigma_ = sigma_interp(timeStamps_plot)
+    sigmaMtx = np.reshape(sigma_, (navg, -1))
+    sigma0 = np.nanmean(sigmaMtx, axis=0)
+
+    mu_interp = interp1d([dt for dt in timeStamps], mu, bounds_error=False, fill_value="extrapolate")
+    mu_ = mu_interp(timeStamps_plot)
+    muMtx = np.reshape(mu_, (navg, -1))
+    mu0 = np.nanmean(muMtx, axis=0)
+    
+    timeStamps_plot = np.linspace(np.min(timeStamps), np.max(timeStamps), len(mu0))
+    
+    # Generate meshgrid for surface
+    _, epsilonMtx = np.meshgrid(X, epsilon0)
+    _, sigmaMtx = np.meshgrid(X, sigma0)
+    XMtx, muMtx = np.meshgrid(X, mu0)
+
+    
+    # Compute GEV PDF
+    gevvar = gev.pdf(XMtx, c=epsilonMtx, loc=muMtx, scale=sigmaMtx)
+
+    # Plot surface
+    ax = fig.add_subplot(111, projection='3d')
+    X, timeStamps_plot = np.meshgrid(X, timeStamps_plot)
+    surf = ax.plot_surface(X, timeStamps_plot, gevvar, cmap=cm.viridis, linewidth=0, antialiased=False)
+    
+    phandles.append(surf)
+
+    # Format y-axis as dates
+    ax.yaxis.set_major_formatter(mdates.DateFormatter(dateformat))
+    ax.view_init(elev=48, azim=24.3)
+
+    ax.set_xlabel(xlabel, fontsize=labelFontSize)
+    ax.set_ylabel(ylabel, fontsize=labelFontSize)
+    ax.set_zlabel(zlabel, fontsize=labelFontSize)
+    ax.tick_params(axis='both', labelsize=axisFontSize)
+
+    plt.tight_layout()
+
+    return phandles
+
+def tsEvaPlotSeriesTrendStdDevFromAnalysisObj(nonStationaryEvaParams,stationaryTransformData,**kwargs):
+    plotPercentile = kwargs.get('plotPercentile',-1)
+    ylabel = kwargs.get('ylabel','levels (m)')
+    title = kwargs.get('title','')
+    minyear = kwargs.get('minyear',1)
+    maxyear = kwargs.get('maxyear',9999)
+    for key, value in kwargs.items():
+        if (key=='plotPercentile'): 
+            plotPercentile=value
+        if (key=='ylabel'): 
+            ylabel=value
+        if (key=='title'): 
+            title=value
+        if (key=='minyear'): 
+            minyear=value
+        if (key=='maxyear'): 
+            maxyear=value
+
+    # Extract required series
+    timeStamps = stationaryTransformData.timeStamps
+    series = stationaryTransformData.nonStatSeries
+    trend = stationaryTransformData.trendSeries
+    std_dev = stationaryTransformData.stdDevSeries
+    
+    if hasattr(stationaryTransformData, 'statsTimeStamps'):
+        statsTimeStamps = stationaryTransformData.statsTimeStamps
+    else:
+        statsTimeStamps = timeStamps
+    
+    # Plot core trend + std dev
+    phandles = tsEvaPlotSeriesTrendStdDev(timeStamps, series, trend, std_dev,statsTimeStamps=statsTimeStamps,**kwargs)
+
+    # Optionally plot percentile
+    if plotPercentile != -1:
+        prcntile = tsEvaNanRunningPercentile(series,stationaryTransformData['runningStatsMulteplicity'],plotPercentile)
+
+        fig = plt.figure(phandles[0].figure.number)
+        ax = fig.gca()
+        hndl, = ax.plot(timeStamps, prcntile)
+        phandles.append(hndl)
+
+    return phandles
+
+def tsEvaPlotReturnLevelsGEV(epsilon, sigma, mu, epsilonStdErr, sigmaStdErr, muStdErr, **kwargs):
     # Default argument values
 
-    minReturnPeriodYears = 5
-    maxReturnPeriodYears = 1000
-    confidenceAreaColor = [189/255, 252/255, 201/255]  # light green
-    confidenceBarColor = [34/255, 139/255, 34/255]      # dark green
-    returnLevelColor = 'k'
-    xlabel = 'return period (years)'
-    ylabel = 'return levels (m)'
-    ylim = None
-    dtSampleYears = 1
-    ax = None
+    minReturnPeriodYears = kwargs.get('minReturnPeriodYears',5)
+    maxReturnPeriodYears = kwargs.get('maxReturnPeriodYears',1000)
+    confidenceAreaColor = kwargs.get('confidenceAreaColor',[0.741, 0.988, 0.788])  # light green
+    confidenceBarColor = kwargs.get('confidenceBarColor',[0.133, 0.545, 0.133])      # dark green
+    returnLevelColor = kwargs.get('returnLevelColor','k')
+    xlabel = kwargs.get('xlabel','return period (years)')
+    ylabel = kwargs.get('ylabel','return levels (m)')
+    ylim = kwargs.get('ylim',None)
+    dtSampleYears = kwargs.get('dtSampleYears',1)
+    ax = kwargs.get('ax',None)
 
+    for key, value in kwargs.items():
+        if (key=='minReturnPeriodYears'):
+            minReturnPeriodYears=value
+        if (key=='maxReturnPeriodYears'):
+            maxReturnPeriodYears=value
+        if (key=='confidenceAreaColor'):
+            confidenceAreaColor=value
+        if (key=='confidenceBarColor'):
+            confidenceBarColor=value
+        if (key=='returnLevelColor'):
+            returnLevelColor=value
+        if (key=='xlabel'):
+            xlabel=value
+        if (key=='ylabel'):
+            ylabel=value
+        if (key=='ylim'):
+            ylim=value
+        if (key=='dtSampleYears'):
+            dtSampleYears=value
+        if (key=='ax'):
+            ax=value
+    
     # Compute return periods and their corresponding periods in dt
     returnPeriodsInYears = np.logspace(np.log10(minReturnPeriodYears), np.log10(maxReturnPeriodYears), num=100)
     returnPeriodsInDts = returnPeriodsInYears / dtSampleYears
@@ -152,12 +879,13 @@ def tsEvaPlotReturnLevelsGEV(epsilon, sigma, mu, epsilonStdErr, sigmaStdErr, muS
     
     # Determine Y limits based on the confidence intervals
     if ylim is not None:
-        minRL, maxRL = min(ylim), max(ylim)
+        minRL = min(ylim)
+        maxRL = max(ylim)
     else:
-        minRL, maxRL = min(infRLCI), max(supRLCI)
+        minRL = min(np.min(arr) for arr in infRLCI)
+        maxRL = max(np.min(arr) for arr in supRLCI)
 
-        
-    # Plotting
+        # Plotting
     if ax is None:
         fig, ax = plt.subplots(figsize=(13, 7))  # Similar to figure position and size
     else:
@@ -178,7 +906,8 @@ def tsEvaPlotReturnLevelsGEV(epsilon, sigma, mu, epsilonStdErr, sigmaStdErr, muS
 
     # Set axis limits
     ax.set_xlim([minReturnPeriodYears, maxReturnPeriodYears])
-    ax.set_ylim([minRL[0], maxRL[0]])
+#    ax.set_ylim([minRL[0], maxRL[0]])
+    ax.set_ylim([minRL, maxRL])
 
     # Labeling and formatting
     ax.set_xlabel(xlabel, fontsize=24)
@@ -204,41 +933,49 @@ def tsEvaPlotReturnLevelsGEV(epsilon, sigma, mu, epsilonStdErr, sigmaStdErr, muS
 
     return phandles
 
-def tsEvaPlotReturnLevelsGEVFromAnalysisObj(
-    nonStationaryEvaParams, timeIndex
-):
-    epsilon = nonStationaryEvaParams['GEVstat']['parameters']['epsilon']
-    sigma = np.mean(nonStationaryEvaParams['GEVstat']['parameters']['sigma'])
-    mu = np.mean(nonStationaryEvaParams['GEVstat']['parameters']['mu'])
-    dtSampleYears = nonStationaryEvaParams['GEVstat']['parameters']['timeDeltaYears']
-    epsilonStdErr = nonStationaryEvaParams['GEVstat']['paramErr']['epsilonErr']
-    sigmaStdErr = np.mean(nonStationaryEvaParams['GEVstat']['paramErr']['sigmaErr'])
-    muStdErr = np.mean(nonStationaryEvaParams['GEVstat']['paramErr']['muErr'])
+def tsEvaPlotReturnLevelsGEVFromAnalysisObj(nonStationaryEvaParams, timeIndex, **kwargs):
+    ylim = kwargs.get('ylim',None)
+    for key, value in kwargs.items():
+        if (key=='ylim'): 
+            ylim=value
+
+    epsilon = nonStationaryEvaParams[0]['parameters']['epsilon']
+    sigma = np.mean(nonStationaryEvaParams[0]['parameters']['sigma'])
+    mu = np.mean(nonStationaryEvaParams[0]['parameters']['mu'])
+    dtSampleYears = nonStationaryEvaParams[0]['parameters']['timeDeltaYears']
+    epsilonStdErr = nonStationaryEvaParams[0]['paramErr']['epsilonErr']
+    sigmaStdErr = np.mean(nonStationaryEvaParams[0]['paramErr']['sigmaErr'])
+    muStdErr = np.mean(nonStationaryEvaParams[0]['paramErr']['muErr'])
     phandles = tsEvaPlotReturnLevelsGEV(
         epsilon,
         sigma,
         mu,
         epsilonStdErr,
         sigmaStdErr,
-        muStdErr
+        muStdErr,
+        ylim=ylim
     )
     return phandles
 
                 
-def tsEvaPlotReturnLevelsGPDFromAnalysisObj(
-    nonStationaryEvaParams, timeIndex
-):
-    epsilon = nonStationaryEvaParams['GPDstat']['parameters']['epsilon']
-    sigma = nonStationaryEvaParams['GPDstat']['parameters']['sigma']
-    threshold = nonStationaryEvaParams['GPDstat']['parameters']['threshold']
-    thStart = nonStationaryEvaParams['GPDstat']['parameters']['timeHorizonStart']
-    thEnd = nonStationaryEvaParams['GPDstat']['parameters']['timeHorizonEnd']
+def tsEvaPlotReturnLevelsGPDFromAnalysisObj(nonStationaryEvaParams, timeIndex, **kwargs):
+
+    ylim = kwargs.get('ylim',None)
+    for key, value in kwargs.items():
+        if (key=='ylim'): 
+            ylim=value
+
+    epsilon = nonStationaryEvaParams[1]['parameters']['epsilon']
+    sigma = nonStationaryEvaParams[1]['parameters']['sigma']
+    threshold = nonStationaryEvaParams[1]['parameters']['threshold']
+    thStart = nonStationaryEvaParams[1]['parameters']['timeHorizonStart']
+    thEnd = nonStationaryEvaParams[1]['parameters']['timeHorizonEnd']
     timeHorizonInYears = round((thEnd-thStart)/ 365.2425)
-    nPeaks = nonStationaryEvaParams['GPDstat']['parameters']['nPeaks']
+    nPeaks = nonStationaryEvaParams[1]['parameters']['nPeaks']
     
-    epsilonStdErr = nonStationaryEvaParams['GPDstat']['paramErr']['epsilonErr']
-    sigmaStdErr = np.mean(nonStationaryEvaParams['GPDstat']['paramErr']['sigmaErr'])
-    thresholdStdErr = nonStationaryEvaParams['GPDstat']['paramErr']['thresholdErr']
+    epsilonStdErr = nonStationaryEvaParams[1]['paramErr']['epsilonErr']
+    sigmaStdErr = np.mean(nonStationaryEvaParams[1]['paramErr']['sigmaErr'])
+    thresholdStdErr = nonStationaryEvaParams[1]['paramErr']['thresholdErr']
 
     phandles = tsEvaPlotReturnLevelsGPD(
         epsilon,
@@ -248,23 +985,46 @@ def tsEvaPlotReturnLevelsGPDFromAnalysisObj(
         sigmaStdErr,
         thresholdStdErr,
         nPeaks,
-        timeHorizonInYears
+        timeHorizonInYears,
+        ylim=ylim
     )
     return phandles
 
-def tsEvaPlotReturnLevelsGPD(epsilon, sigma, threshold, epsilonStdErr, sigmaStdErr,thresholdStdErr,nPeaks,timeHorizonInYears):
+def tsEvaPlotReturnLevelsGPD(epsilon, sigma, threshold, epsilonStdErr, sigmaStdErr,thresholdStdErr,nPeaks,timeHorizonInYears,**kwargs):
     # Default argument values
 
-    minReturnPeriodYears = 5
-    maxReturnPeriodYears = 1000
-    confidenceAreaColor = [189/255, 252/255, 201/255]  # light green
-    confidenceBarColor = [34/255, 139/255, 34/255]      # dark green
-    returnLevelColor = 'k'
-    xlabel = 'return period (years)'
-    ylabel = 'return levels (m)'
-    ylim = None
-    dtSampleYears = 1
-    ax = None
+    minReturnPeriodYears = kwargs.get('minReturnPeriodYears',5)
+    maxReturnPeriodYears = kwargs.get('maxReturnPeriodYears',1000)
+    confidenceAreaColor = kwargs.get('confidenceAreaColor',[0.741, 0.988, 0.788])  # light green
+    confidenceBarColor = kwargs.get('confidenceBarColor',[0.133, 0.545, 0.133])      # dark green
+    returnLevelColor = kwargs.get('returnLevelColor','k')
+    xlabel = kwargs.get('xlabel','return period (years)')
+    ylabel = kwargs.get('ylabel','return levels (m)')
+    ylim = kwargs.get('ylim',None)
+    dtSampleYears = kwargs.get('dtSampleYears',1)
+    ax = kwargs.get('ax',None)
+
+    for key, value in kwargs.items():
+        if (key=='minReturnPeriodYears'):
+            minReturnPeriodYears=value
+        if (key=='maxReturnPeriodYears'):
+            maxReturnPeriodYears=value
+        if (key=='confidenceAreaColor'):
+            confidenceAreaColor=value
+        if (key=='confidenceBarColor'):
+            confidenceBarColor=value
+        if (key=='returnLevelColor'):
+            returnLevelColor=value
+        if (key=='xlabel'):
+            xlabel=value
+        if (key=='ylabel'):
+            ylabel=value
+        if (key=='ylim'):
+            ylim=value
+        if (key=='dtSampleYears'):
+            dtSampleYears=value
+        if (key=='ax'):
+            ax=value
 
     # Compute return periods and their corresponding periods in dt
     returnPeriodsInYears = np.logspace(np.log10(minReturnPeriodYears), np.log10(maxReturnPeriodYears), num=100)
@@ -276,12 +1036,14 @@ def tsEvaPlotReturnLevelsGPD(epsilon, sigma, threshold, epsilonStdErr, sigmaStdE
     # Confidence intervals
     supRLCI = returnLevels + 2 * returnLevelsErrs
     infRLCI = returnLevels - 2 * returnLevelsErrs
-
+    
     # Determine Y limits based on the confidence intervals
     if ylim is not None:
-        minRL, maxRL = min(ylim), max(ylim)
+        minRL = min(ylim)
+        maxRL = max(ylim)
     else:
-        minRL, maxRL = min(infRLCI), max(supRLCI)
+        minRL = min(np.min(arr) for arr in infRLCI)
+        maxRL = max(np.min(arr) for arr in supRLCI)
 
         
     # Plotting
@@ -305,7 +1067,8 @@ def tsEvaPlotReturnLevelsGPD(epsilon, sigma, threshold, epsilonStdErr, sigmaStdE
 
     # Set axis limits
     ax.set_xlim([minReturnPeriodYears, maxReturnPeriodYears])
-    ax.set_ylim([minRL[0], maxRL[0]])
+#    ax.set_ylim([minRL[0], maxRL[0]])
+    ax.set_ylim([minRL, maxRL])
 
     # Labeling and formatting
     ax.set_xlabel(xlabel, fontsize=24)
@@ -319,7 +1082,6 @@ def tsEvaPlotReturnLevelsGPD(epsilon, sigma, threshold, epsilonStdErr, sigmaStdE
     if fig:
         fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
 
-    # Return plot handles (mimicking phandles in MATLAB)
     phandles = {
         'fig': fig,
         'ax': ax,
@@ -646,19 +1408,29 @@ def tsTimeSeriesToPointData(ms, pot_threshold, pot_threshold_error):
 
     return pointData
 
-def tsEvaSampleData(ms, meanEventsPerYear, minEventsPerYear, minPeakDistanceInDays, tail=None):
+#def tsEvaSampleData(ms, meanEventsPerYear, minEventsPerYear, minPeakDistanceInDays, tail=None, transfType=None):
+def tsEvaSampleData(ms, **kwargs):
     pctsDesired = [90, 95, 99, 99.9]
-    args = {'meanEventsPerYear': meanEventsPerYear,
-            'minEventsPerYear': minEventsPerYear,
-            'potPercentiles': [50, 70] + list(range(85, 98, 2))}
-    meanEventsPerYear = args['meanEventsPerYear']
-    minEventsPerYear = args['minEventsPerYear']
-    potPercentiles = args['potPercentiles']
+    meanEventsPerYear=kwargs.get('meanEventsPerYear',5)
+    potPercentiles=kwargs.get('potPercentiles',[50, 70] + list(range(85, 98, 2)))
 
-    if tail is None:
-        raise ValueError("tail for POT selection needs to be 'high' or 'low'")
+    for key, value in kwargs.items():
+        if (key=='meanEventsPerYear'): 
+            meanEventsPerYear=value
+        if (key=='potPercentiles'): 
+            potPercentiles=value
 
-    POTData = tsGetPOT(ms, potPercentiles, meanEventsPerYear, minEventsPerYear, minPeakDistanceInDays, tail)
+#    args = {'meanEventsPerYear': meanEventsPerYear,
+#            'minEventsPerYear': minEventsPerYear,
+#            'potPercentiles': [50, 70] + list(range(85, 98, 2))}
+#    meanEventsPerYear = args['meanEventsPerYear']
+#    minEventsPerYear = args['minEventsPerYear']
+#    potPercentiles = args['potPercentiles']
+
+#    if tail is None:
+#        raise ValueError("tail for POT selection needs to be 'high' or 'low'")
+
+    POTData = tsGetPOT(ms, potPercentiles, meanEventsPerYear, **kwargs)
 
     vals = np.nanquantile(ms[:, 1], [x / 100 for x in pctsDesired])
     
@@ -684,7 +1456,12 @@ def tsEvaSampleData(ms, meanEventsPerYear, minEventsPerYear, minPeakDistanceInDa
 
     return pointData
 
-def tsGetPOT(ms, pcts, desiredEventsPerYear, minEventsPerYear, minPeakDistanceInDays, tail):
+def tsGetPOT(ms, pcts, desiredEventsPerYear, **kwargs):
+    
+    minPeakDistanceInDays=kwargs.get('minPeakDistanceInDays',3)
+    for key, value in kwargs.items():
+        if (key=='minPeakDistanceInDays'): 
+            minPeakDistanceInDays=value
     if minPeakDistanceInDays == -1:
         raise ValueError("label parameter 'minPeakDistanceInDays' must be set")
 
@@ -715,14 +1492,14 @@ def tsGetPOT(ms, pcts, desiredEventsPerYear, minEventsPerYear, minPeakDistanceIn
         thrsdts[ipp] = thrsdt
         ms[np.isnan(ms[:, 1])] = -9999
         minEventsPerYear = 1
-
-        if tail == "high":
-            shape_bnd = [-0.5, 1]
-            locs,pks = find_peaks(ms[:, 1], height=thrsdt,distance=minPeakDistance)
+        
+        #        if tail == "high":
+        shape_bnd = [-0.5, 1]
+        locs,pks = find_peaks(ms[:, 1], height=thrsdt,distance=minPeakDistance)
             
-        if tail == "low":
-            shape_bnd = [-1.5, 0]
-            locs,pks = declustpeaks(data = ms[:, 1] ,minpeakdistance = minPeakDistance ,minrundistance = minRunDistance, qt=thrsdt)
+#        if tail == "low":
+#            shape_bnd = [-1.5, 0]
+#            locs,pks = declustpeaks(data = ms[:, 1] ,minpeakdistance = minPeakDistance ,minrundistance = minRunDistance, qt=thrsdt)
 
         peaks=pks['peak_heights']
 
@@ -748,11 +1525,11 @@ def tsGetPOT(ms, pcts, desiredEventsPerYear, minEventsPerYear, minPeakDistanceIn
     else:
         thrsd = 0
         pct = None
-
-    if tail == "high":
-        locs,pks = find_peaks(ms[:, 1], distance=minPeakDistance, height=thrsdt)
-    if tail == "low":
-        locs,pks = declustpeaks(data=ms[:, 1], minpeakdistance=minPeakDistance, minrundistance=minRunDistance, qt=thrsd)
+        
+    #    if tail == "high":
+    locs,pks = find_peaks(ms[:, 1], distance=minPeakDistance, height=thrsdt)
+#    if tail == "low":
+#        locs,pks = declustpeaks(data=ms[:, 1], minpeakdistance=minPeakDistance, minrundistance=minRunDistance, qt=thrsd)
     peaks=pks['peak_heights']
     
     ms_Q=ms[:, 1]
@@ -782,18 +1559,653 @@ def tsEvaGetTimeStep(times):
         dt = np.min(df)   # Find the minimum difference again
     return dt
 
+import numpy as np
+
+def tsSameValuesSegmentation(iii, val=1):
+    # Initialize the output lists
+    inds = []
+    rinds = []
+
+    # Length of the input array
+    ll = len(iii)
+
+    # Calculate the differences between consecutive elements
+    diffs = np.diff(iii)
+    
+    # Find the indices where the value changes
+    indsep = np.where(diffs != 0)[0]
+
+    # Define the start (l1) and end (l2) indices for each segment
+    l1 = np.concatenate(([0], indsep + 1))
+    l2 = np.concatenate((indsep, [ll - 1]))
+
+    # Iterate through the segments
+    for i in range(len(l1)):
+        if iii[l1[i]] == val:
+            inds.append(iii[l1[i]:l2[i] + 1])  # Extract the segment of values
+            rinds.append(np.arange(l1[i], l2[i] + 1))  # Extract the indices of the segment
+
+    return inds, rinds
+
+def tsRemoveConstantSubseries(srs, stackedValuesCount):
+    cleaned_series = srs.copy()
+    tmp1, tmp2 = tsSameValuesSegmentation(np.diff(srs), 0)
+    for i in range(len(tmp2)):
+        ii = tmp2[i]
+        if len(ii) >= stackedValuesCount:
+            cleaned_series[ii[2:end]] = nan
+    return cleaned_series
+
+def tsEvaFillSeries(timeStamps, series):
+    indxs = np.logical_not(np.isnan(series))
+    timeStamps = np.where(np.isnan(indxs), 0, timeStamps)
+    series = np.where(np.isnan(indxs), 0, series)
+    #    newTs, _, idx = set(timeStamps.sort())
+    newTs = sorted(set(timeStamps))
+    df = pd.DataFrame({'idx': indxs, 'value': series})
+    newSeries = df['value'].to_numpy()
+
+
+    mint = min(newTs)
+    maxt = max(newTs)
+    dt = min(np.diff(newTs))
+    if (dt >= 350) and (dt <= 370):
+        mindtVec = datevec(mint)
+        mindtY = mindtVec(1)
+        maxdtVec = datevec(maxt)
+        maxdtY = maxdtVec(1)
+        years = (M[mindtY:maxdtY]).H
+        dtvec = M[[years, ones(size(years)), ones(size(years))]]
+        filledTimeStamps = datenum(dtvec)
+    elif (dt >= 28) and (dt <= 31):
+        mindtVec = datevec(mint)
+        mindtY = mindtVec(1)
+        maxdtVec = datevec(maxt)
+        maxdtY = maxdtVec(1)
+        years = M[mindtY:maxdtY]
+        months = M[1:12]
+        ymtx, mmtx = meshgrid(years, months)
+        ys = ymtx[I[:]]
+        ms = mmtx[I[:]]
+        dtvec = M[[ys, ms, ones(size(ys))]]
+        filledTimeStamps = datenum(dtvec)
+    else:
+        filledTimeStamps = np.arange(mint, maxt + dt, dt)
+    interp_function = interp1d(newTs, newSeries, kind='nearest', fill_value="extrapolate")
+    
+    filledSeries = interp_function(filledTimeStamps)
+    filledSeries = tsRemoveConstantSubseries(filledSeries, 4)
+    return filledTimeStamps, filledSeries, dt
+
+import numpy as np
+
+def tsEvaNanRunningMean(series, windowSize):
+    minNThreshold = 1
+    rnmn = np.full(len(series), np.nan)  # Initialize output with NaNs
+    dx = int(np.ceil(windowSize / 2))  # Half window size, rounded up
+    l = len(series)
+    sm = 0
+    n = 0
+
+    for ii in range(l):
+        minidx = max(ii - dx, 0)  # Adjust for 0-based index
+        maxidx = min(ii + dx, l - 1)  # Adjust for 0-based index
+        
+        if ii == 0:  # For the first element
+            subsrs = series[minidx:maxidx + 1]  # Slicing inclusive
+            sm = np.nansum(subsrs)
+            n = np.sum(~np.isnan(subsrs))
+        else:
+            if minidx > 0:  # If we're not at the start
+                sprev = series[minidx - 1]
+                if not np.isnan(sprev):
+                    sm -= sprev
+                    n -= 1
+            if maxidx < l - 1:  # If we're not at the end
+                snext = series[maxidx + 1]
+                if not np.isnan(snext):
+                    sm += snext
+                    n += 1
+        
+        if n > minNThreshold:
+            rnmn[ii] = sm / n
+        else:
+            rnmn[ii] = np.nan
+
+    return rnmn
+
+def tsEvaRunningMeanTrend(timeStamps, series, timeWindow):
+    filledTimeStamps, filledSeries, dt = tsEvaFillSeries(timeStamps, series)
+    nRunMn = np.ceil(timeWindow/dt)
+    trendSeries = tsEvaNanRunningMean(filledSeries, nRunMn)
+    trendSeries = tsEvaNanRunningMean(trendSeries, np.ceil(nRunMn / 2))
+    return trendSeries, filledTimeStamps, filledSeries, nRunMn
+
+def tsEvaDetrendTimeSeries(timeStamps, series, timeWindow, **kwargs):
+    extremeLowThreshold=kwargs.get('extremeLowThreshold',float('-inf'))
+    for key, value in kwargs.items():
+        if (key=='extremeLowThreshold'): 
+            extremeLowThreshold=value
+    trendSeries, filledTimeStamps, filledSeries, nRunMn = tsEvaRunningMeanTrend(
+        timeStamps, series, timeWindow
+    )
+    statSeries = filledSeries.copy()
+    statSeries[statSeries < extremeLowThreshold] = np.nan
+    detrendSeries = statSeries - trendSeries
+    return detrendSeries, trendSeries, filledTimeStamps, filledSeries, nRunMn
+
+def tsEvaNanRunningStatistics(series, windowSize):
+    minNThreshold = 1
+
+    # Calculate running mean using the separate function
+    rnmn = tsEvaNanRunningMean(series, windowSize)
+    
+    # Initialize output arrays with NaNs
+    rnvar = np.full(len(series), np.nan)
+    rn3mom = np.full(len(series), np.nan)
+    rn4mom = np.full(len(series), np.nan)
+
+    dx = int(np.ceil(windowSize / 2))
+    l = len(series)
+
+    sm = 0
+    smsq = 0 
+    sm3pw = 0
+    sm4pw = 0
+    n = 0    
+
+    for ii in range(l): # Python's 0-based indexing
+        minindx = max(ii - dx, 0)
+        maxindx = min(ii + dx, l - 1)
+
+        if ii == 0:
+            subsrs = series[minindx : maxindx + 1]
+
+            subsrsMean = rnmn[ii] 
+            
+            if not np.isnan(subsrsMean):
+                diffFromMean = subsrs - subsrsMean
+                
+                validDiffs = diffFromMean[~np.isnan(diffFromMean)]
+                smsq = np.sum(validDiffs**2)
+                sm3pw = np.sum(validDiffs**3)
+                sm4pw = np.sum(validDiffs**4)
+                n = len(validDiffs)
+            else:
+                smsq, sm3pw, sm4pw, n = 0, 0, 0, 0
+        else:
+
+            if minindx > 0:
+                sprevVal = series[minindx - 1]
+                sprevMean = rnmn[minindx - 1]
+                
+                if not np.isnan(sprevVal) and not np.isnan(sprevMean):
+                    sprevDiff = sprevVal - sprevMean
+                    smsq = max(0, smsq - sprevDiff**2)
+                    sm3pw = sm3pw - sprevDiff**3
+                    sm4pw = max(0, sm4pw - sprevDiff**4)
+                    n -= 1
+
+            # Element entering the window from the right
+            if maxindx < l - 1:
+                snextVal = series[maxindx + 1]
+                snextMean = rnmn[minindx + 1]
+                
+                if not np.isnan(snextVal) and not np.isnan(snextMean):
+                    snextDiff = snextVal - snextMean
+                    smsq += snextDiff**2
+                    sm3pw += snextDiff**3
+                    sm4pw += snextDiff**4
+                    n += 1
+        
+        # Calculate moments if enough non-NaN elements are present
+        
+        if n > minNThreshold:
+            rnvar[ii] = smsq / n
+            rn3mom[ii] = sm3pw / n
+            rn4mom[ii] = sm4pw / n
+        else:
+            pass
+
+    return rnmn, rnvar, rn3mom, rn4mom
+
+def tsEvaNanRunningVariance(series, windowSize):
+
+    minNThreshold = 1
+
+    rnmn = np.full(len(series), np.nan) # Initialize with NaNs
+    dx = int(np.ceil(windowSize / 2))
+    l = len(series)
+    smsq = 0
+    n = 0
+
+    for ii in range(l):
+        minindx = max(ii - dx, 0) # Python uses 0-based indexing
+        maxindx = min(ii + dx, l - 1) # Python's slice end is exclusive, but for direct indexing it's l-1
+
+        if ii == 0: 
+            subSqSrs = series[minindx : maxindx + 1]**2
+            smsq = np.nansum(subSqSrs)
+            n = np.sum(~np.isnan(subSqSrs))
+        else:
+            # When window slides, subtract the squared value leaving the window
+            if minindx > 0: # If the left side of the window moved
+                sprev = series[minindx - 1]
+                if not np.isnan(sprev):
+                    smsq = max(0, smsq - sprev**2)
+                    n -= 1
+            
+            # Add the squared value entering the window
+            if maxindx < l - 1: # If the right side of the window can expand
+                snext = series[maxindx + 1]
+                if not np.isnan(snext):
+                    smsq += snext**2
+                    n += 1
+        
+        if n > minNThreshold:
+            rnmn[ii] = smsq / n
+        else:
+            rnmn[ii] = np.nan 
+            
+    return rnmn
+
+def tsEvaTransformSeriesToStationaryTrendOnly(timeStamps, series, timeWindow, **kwargs):
+    print("computing the trend ...")
+    class TrasfData:
+        pass
+    
+    trasfData = TrasfData()
+
+    (
+        statSeries,
+        trendSeries,
+        filledTimeStamps,
+        filledSeries,
+        nRunMn,
+    ) = tsEvaDetrendTimeSeries(timeStamps, series, timeWindow)
+    print("computing the slowly varying standard deviation ...")
+    varianceSeries = tsEvaNanRunningVariance(statSeries, nRunMn)
+    varianceSeries = tsEvaNanRunningMean(varianceSeries, np.ceil(nRunMn / 2))
+    stdDevSeries = varianceSeries**0.5
+    statSeries = statSeries / stdDevSeries
+    _, _, statSer3Mom, statSer4Mom = tsEvaNanRunningStatistics(statSeries, nRunMn)
+    statSer3Mom = tsEvaNanRunningMean(statSer3Mom, np.ceil(nRunMn))
+    statSer4Mom = tsEvaNanRunningMean(statSer4Mom, np.ceil(nRunMn))
+
+    N = nRunMn.copy()
+    trendError = np.nanmean(stdDevSeries) / (N ** 0.5)
+    avgStdDev = np.nanmean(stdDevSeries)
+    S = 2
+    stdDevError = avgStdDev * (2 * S**2 / N**3) ** (1.0 / 4.0)
+    
+    
+    trasfData.runningStatsMulteplicity = nRunMn.copy()
+    trasfData.stationarySeries = statSeries.copy()
+    trasfData.trendSeries = trendSeries.copy()
+    trasfData.trendSeriesNonSeasonal = trendSeries.copy()
+    trasfData.trendError = trendError.copy()
+    trasfData.stdDevSeries = stdDevSeries.copy()
+    trasfData.stdDevSeriesNonSeasonal = stdDevSeries.copy()
+    trasfData.stdDevError = stdDevError * np.ones_like(stdDevSeries)
+    trasfData.timeStamps = filledTimeStamps.copy()
+    trasfData.nonStatSeries = filledSeries.copy()
+    trasfData.statSer3Mom = statSer3Mom.copy()
+    trasfData.statSer4Mom = statSer4Mom.copy()
+
+    return trasfData
+
+def tsEstimateAverageSeasonality(time_stamps, seasonality_series):
+    avg_year_length = 365.2425
+    n_month_in_year = 12
+    avg_month_length = avg_year_length / n_month_in_year
+
+    first_tm_stamp = time_stamps[0]
+    last_tm_stamp = time_stamps[-1]
+    month_tm_stamp_start = np.arange(first_tm_stamp, last_tm_stamp, avg_month_length)
+    month_tm_stamp_end = month_tm_stamp_start + avg_month_length
+
+    grpd_ssn_ = [np.nanmean(seasonality_series[(month_tm_stamp_start[i] <= time_stamps) & (time_stamps < month_tm_stamp_end[i])]) for i in range(len(month_tm_stamp_start))]
+    n_years = int(np.ceil(len(grpd_ssn_) / n_month_in_year))
+    grpd_ssn = np.full(n_years * n_month_in_year, np.nan)
+    grpd_ssn[:len(grpd_ssn_)] = grpd_ssn_
+
+    grpd_ssn_mtx = grpd_ssn.reshape(n_month_in_year, -1)
+    mn_ssn_ = np.nanmean(grpd_ssn_mtx, axis=1)
+
+    # estimating the first 2 Fourier components
+    it = np.arange(1, n_month_in_year + 1)
+    x = it / 6 * np.pi
+    dx = np.pi / 6
+    a0 = np.mean(mn_ssn_)
+    a1 = (1 / np.pi) * np.sum(np.cos(x) * mn_ssn_) * dx
+    b1 = (1 / np.pi) * np.sum(np.sin(x) * mn_ssn_) * dx
+    a2 = (1 / np.pi) * np.sum(np.cos(2 * x) * mn_ssn_) * dx
+    b2 = (1 / np.pi) * np.sum(np.sin(2 * x) * mn_ssn_) * dx
+    a3 = (1 / np.pi) * np.sum(np.cos(3 * x) * mn_ssn_) * dx
+    b3 = (1 / np.pi) * np.sum(np.sin(3 * x) * mn_ssn_) * dx
+
+    mn_ssn = a0 + (a1 * np.cos(x) + b1 * np.sin(x)) + (a2 * np.cos(2 * x) + b2 * np.sin(2 * x)) + (a3 * np.cos(3 * x) + b3 * np.sin(3 * x))
+    month_avg_mtx = np.tile(mn_ssn[:, np.newaxis], (1, n_years))
+    month_avg_vec = month_avg_mtx.flatten()
+
+    imnth = np.arange(len(month_avg_vec))
+    avg_tm_stamp = first_tm_stamp + avg_month_length / 2 + imnth * avg_month_length
+
+    # adding first and last times
+    month_avg_vec = np.concatenate(([month_avg_vec[0]], month_avg_vec, [month_avg_vec[-1]]))
+    avg_tm_stamp = np.concatenate(([first_tm_stamp], avg_tm_stamp, [np.max(month_tm_stamp_end)]))
+
+    average_seasonality_series = np.interp(time_stamps, avg_tm_stamp, month_avg_vec)
+    return average_seasonality_series
+
+def tsEvaTransformSeriesToStationaryMultiplicativeSeasonality(timeStamps, series, timeWindow, *args, **kwargs):
+
+    seasonalityTimeWindow = 2 * 30.4  # 2 months
+    
+    print('computing trend ...')
+    class TrasfData:
+        pass
+
+    trasfData = TrasfData()
+
+    statSeries, trendSeries, filledTimeStamps, filledSeries, nRunMn = tsEvaDetrendTimeSeries(timeStamps, series, timeWindow, *args, **kwargs)
+    
+    print('computing trend seasonality ...')
+    trendSeasonality = tsEstimateAverageSeasonality(filledTimeStamps, statSeries)
+    statSeries -= trendSeasonality
+    
+    print('computing slowly varying standard deviation ...')
+    varianceSeries = tsEvaNanRunningVariance(statSeries, nRunMn)
+    # further smoothing
+    varianceSeries = tsEvaNanRunningMean(varianceSeries, int(np.ceil(nRunMn/2)))
+    
+    seasonalVarNRun = int(round(nRunMn / timeWindow * seasonalityTimeWindow))
+    
+    print('computing standard deviation seasonality ...')
+    seasonalVarSeries = tsEvaNanRunningVariance(statSeries, seasonalVarNRun)
+    seasonalStdDevSeries = np.sqrt(seasonalVarSeries / varianceSeries)
+    seasonalStdDevSeries = tsEstimateAverageSeasonality(filledTimeStamps, seasonalStdDevSeries)
+    
+    stdDevSeriesNonSeasonal = np.sqrt(varianceSeries)
+    
+    # prevent division by zero
+    stdDevSeriesNonSeasonal = np.where(stdDevSeriesNonSeasonal == 0, np.nan, stdDevSeriesNonSeasonal)
+    seasonalStdDevSeries = np.where(seasonalStdDevSeries == 0, np.nan, seasonalStdDevSeries)
+    
+    statSeries /= (stdDevSeriesNonSeasonal * seasonalStdDevSeries)
+    
+    # Placeholder for running statistics
+    # Assuming tsEvaNanRunningStatistics returns three moments
+    # For simplicity, we can set them as NaNs or implement accordingly
+    _, _, statSer3Mom, statSer4Mom = tsEvaNanRunningStatistics(statSeries, nRunMn)
+    statSer3Mom = tsEvaNanRunningMean(statSer3Mom, int(np.ceil(nRunMn)))
+    statSer4Mom = tsEvaNanRunningMean(statSer4Mom, int(np.ceil(nRunMn)))
+    
+    N = nRunMn
+    # Error on the trend
+    trendNonSeasonalError = np.nanmean(stdDevSeriesNonSeasonal) / np.sqrt(N)
+    
+    # Calculation of stdDevNonSeasonalError
+    S = 2
+    avgStdDev = np.nanmean(stdDevSeriesNonSeasonal)
+    stdDevNonSeasonalError = avgStdDev * ( (2 * S ** 2) / (N ** 3) ) ** (1/4.)
+    
+    Ntot = len(series)
+    trendSeasonalError = stdDevNonSeasonalError * np.sqrt(12 / Ntot + 1 / N)
+    # Prevent negative or zero in root
+    denom = Ntot ** 2 * N
+    stdDevSeasonalError = seasonalStdDevSeries * (288.0 / denom) ** (1/4.)
+    
+    trendError = np.sqrt(trendNonSeasonalError ** 2 + trendSeasonalError ** 2)
+    stdDevError = np.sqrt(
+        (stdDevSeriesNonSeasonal * stdDevSeasonalError) ** 2 +
+        (seasonalStdDevSeries * stdDevNonSeasonalError) ** 2
+    )
+    
+    # Prepare output dictionary
+    trasfData.runningStatsMulteplicity = nRunMn.copy()
+    trasfData.stationarySeries = statSeries.copy()
+    trasfData.trendSeries = trendSeries.copy() + trendSeasonality.copy()
+    trasfData.trendSeriesNonSeasonal = trendSeries.copy()
+    trasfData.stdDevSeries = stdDevSeriesNonSeasonal.copy() * seasonalStdDevSeries.copy()
+    trasfData.stdDevSeriesNonSeasonal = stdDevSeriesNonSeasonal.copy()
+    trasfData.trendNonSeasonalError = trendNonSeasonalError.copy()
+    trasfData.stdDevNonSeasonalError = stdDevNonSeasonalError.copy()
+    trasfData.trendSeasonalError = trendSeasonalError.copy()
+    trasfData.stdDevSeasonalError = stdDevSeasonalError.copy()
+    trasfData.trendError = trendError.copy()
+    trasfData.stdDevError = stdDevError.copy()
+    trasfData.timeStamps = filledTimeStamps.copy()
+    trasfData.nonStatSeries = filledSeries.copy()
+    trasfData.statSer3Mom = statSer3Mom.copy()
+    trasfData.statSer4Mom = statSer4Mom.copy()
+    
+    return trasfData
+
+def tsEvaNonStationary(timeAndSeries, timeWindow,**kwargs):
+
+    transfType=kwargs.get('transfType','trend')
+    minPeakDistanceInDays=kwargs.get('minPeakDistanceInDays',-1)
+    ciPercentile=kwargs.get('ciPercentile',np.nan)
+    potEventsPerYear=kwargs.get('potEventsPerYear',5)
+    evdType=kwargs.get('evdType',['GEV', 'GPD'])
+    gevType=kwargs.get('gevType','GEV')  # can be 'GEV' or 'Gumbel'
+    
+    for key, value in kwargs.items():
+        if (key=='transfType'): 
+            transfType=value
+        if (key=='minPeakDistanceInDays'): 
+            minPeakDistanceInDays=value
+        if (key=='evdType'): 
+            evdType=value
+        if (key=='gevType'): 
+            gevType=value
+        if (key=='potEventsPerYear'): 
+            potEventsPerYear=value
+        if (key=='ciPercentile'): 
+            ciPercentile=value
+
+    if not(
+            (
+                (transfType == "trend" or transfType == "seasonal")
+                or transfType == "trendCIPercentile"
+            )
+            or transfType == "seasonalCIPercentile"
+    ): print("nonStationaryEvaJRCApproach: transfType can be in (trend, seasonal, trendCIPercentile)")
+    
+    if (minPeakDistanceInDays==-1):
+        print("label parameter " "minPeakDistanceInDays" " must be set")
+        
+    nonStationaryEvaParams = []
+    stationaryTransformData = []
+	
+    timeStamps = timeAndSeries[:, 0]
+    series = timeAndSeries[:, 1]
+    
+    if (transfType=="trend"):
+        print("evaluating long term variations of extremes")
+        trasfData = tsEvaTransformSeriesToStationaryTrendOnly(timeStamps, series, timeWindow)
+        
+        gevMaxima = "annual"
+        potEventsPerYear = 5
+        
+    elif (transfType=="seasonal"):
+        print("evaluating long term an seasonal variations of extremes")
+        trasfData = tsEvaTransformSeriesToStationaryMultiplicativeSeasonality(timeStamps, series, timeWindow, **kwargs);
+        gevMaxima = "monthly"
+        potEventsPerYear = 12
+        
+    elif (transfType=="trendCIPercentile"):
+        if (ciPercentile==np.nan):
+            print("For trendCIPercentile transformation the label parameter ''cipercentile'' is mandatory:")
+            print("evaluating long term variations of extremes using the th percentile")
+            gevMaxima = "annual"
+            potEventsPerYear = 5
+    elif (transfType=="seasonalCIPercentile"): 
+        if (ciPercentile==np.nan):
+            print("For seasonalCIPercentile transformation the label parameter ''cipercentile'' is mandatory")
+            print(f"evaluating long term variations of extremes using the {ciPercentile:3f} th percentile")
+            gevMaxima = "monthly"
+            potEventsPerYear = 12
+    
+        # Adjust potEventsPerYear if overridden
+    if 'potEventsPerYear' in kwargs:
+        potEventsPerYear = kwargs['potEventsPerYear']
+
+    ms = np.column_stack((trasfData.timeStamps, trasfData.stationarySeries))
+    dt = tsEvaGetTimeStep(trasfData.timeStamps)
+    minPeakDistance = minPeakDistanceInDays / dt
+    
+    # Estimate non stationary EVA parameters
+    print("Executing stationary EVA")
+    pointData = tsEvaSampleData(ms, meanEventsPerYear=potEventsPerYear, **kwargs)
+    alphaCi = 0.68
+    _, eva, is_valid = tsEVstatistics(pointData, alphaci=alphaCi, gevmaxima=gevMaxima, gevType=gevType, evdType=evdType, tail=None)
+    if not is_valid:
+        return None, None, False
+
+    #    eva[1]['thresholdError'] = pointData['POT']['thresholdError']
+    
+    eva['GPDstat']['thresholdError'] = pointData['POT']['thresholdError']
+    
+    # GEV processing
+    if eva['GEVstat']['parameters'] is not None:
+        epsilonGevX = eva['GEVstat']['parameters']['xi']
+        errEpsilonX = epsilonGevX - eva['GEVstat']['paramCIs']['xici'][0]
+        muGevX = eva['GEVstat']['parameters']['mu']
+        errMuGevX = muGevX - eva['GEVstat']['paramCIs']['muci'][0]
+        sigmaGevX = eva['GEVstat']['parameters']['sigma']
+        errSigmaGevX = sigmaGevX - eva['GEVstat']['paramCIs']['sigci'][0]
+        
+        print("Transforming to non-stationary EVA...")
+        epsilonGevNs = epsilonGevX
+        errEpsilonGevNs = errEpsilonX
+        sigmaGevNs = trasfData.stdDevSeries * sigmaGevX
+        errSigmaGevFit = trasfData.stdDevSeries * errSigmaGevX
+        errSigmaGevTransf = sigmaGevX * trasfData.stdDevError
+        errSigmaGevNs = np.sqrt(errSigmaGevTransf**2 + errSigmaGevFit**2)
+        
+        muGevNs = trasfData.stdDevSeries * muGevX + trasfData.trendSeries
+        errMuGevFit = trasfData.stdDevSeries * errMuGevX
+        errMuGevTransf = np.sqrt((muGevX * trasfData.stdDevError)**2 + trasfData.trendError**2)
+        errMuGevNs = np.sqrt(errMuGevTransf**2 + errMuGevFit**2)
+        
+        gevParams = {
+            'epsilon': epsilonGevNs,
+            'sigma': sigmaGevNs,
+            'mu': muGevNs,
+            'timeDelta': 365.25 if gevMaxima == 'annual' else 365.25 / 12,
+            'timeDeltaYears': 1 if gevMaxima == 'annual' else 1 / 12,
+        }
+        
+        gevParamErr = {
+            'epsilonErr': errEpsilonGevNs,
+            'sigmaErrFit': errSigmaGevFit,
+            'sigmaErrTransf': errSigmaGevTransf,
+            'sigmaErr': errSigmaGevNs,
+            'muErrFit': errMuGevFit,
+            'muErrTransf': errMuGevTransf,
+            'muErr': errMuGevNs
+        }
+        
+        gevObj = {
+            'method': eva['GEVstat']['method'],
+            'parameters': gevParams,
+            'paramErr': gevParamErr,
+            'stationaryParams': eva['GEVstat'],
+            'objs': {'monthlyMaxIndexes': pointData.get('monthlyMaxIndexes', None)}
+        }
+    else:
+        gevObj = {
+            'method': eva['GEVstat']['method'],
+            'parameters': None,
+            'paramErr': None,
+            'stationaryParams': None,
+            'objs': {'monthlyMaxIndexes': None}
+        }
+        
+
+    # GPD processing
+    if eva['GPDstat']['parameters'] is not None:
+        epsilonPotX = eva['GPDstat']['parameters']['shape']
+        errEpsilonPotX = epsilonPotX - eva['GPDstat']['paramCIs'][1][0]
+        sigmaPotX = eva['GPDstat']['parameters']['sigma']
+        errSigmaPotX = sigmaPotX - eva['GPDstat']['paramCIs'][0][0]
+        thresholdPotX = eva['GPDstat']['parameters']['threshold']
+        errThresholdPotX = eva['GPDstat']['thresholdError']
+        nPotPeaks = eva['GPDstat']['parameters']['peaks']
+        percentilePotX = eva['GPDstat']['parameters']['percentile']
+        
+        dtPeaks = minPeakDistance / 2
+        dtPotX = (timeStamps[-1] - timeStamps[0]) / len(series) * dtPeaks
+
+        epsilonPotNs = epsilonPotX
+        errEpsilonPotNs = errEpsilonPotX
+        sigmaPotNs = sigmaPotX * trasfData.stdDevSeries
+        errSigmaPotFit = trasfData.stdDevSeries * errSigmaPotX
+        errSigmaPotTransf = sigmaPotX * trasfData.stdDevError
+        errSigmaPotNs = np.sqrt(errSigmaPotFit**2 + errSigmaPotTransf**2)
+        
+        thresholdPotNs = thresholdPotX * trasfData.stdDevSeries + trasfData.trendSeries
+        thresholdErrFit = 0
+        thresholdErrTransf = np.sqrt((trasfData.stdDevSeries * errThresholdPotX)**2 +(thresholdPotX * trasfData.stdDevError)**2 +trasfData.trendError**2)
+        thresholdErr = thresholdErrTransf
+        
+        potParams = {
+            'epsilon': epsilonPotNs,
+            'sigma': sigmaPotNs,
+            'threshold': thresholdPotNs,
+            'percentile': percentilePotX,
+            'timeDelta': dtPotX,
+            'timeDeltaYears': dtPotX / 365.2425,
+            'timeHorizonStart': np.min(trasfData.timeStamps),
+            'timeHorizonEnd': np.max(trasfData.timeStamps),
+            'nPeaks': nPotPeaks
+        }
+        
+        potParamErr = {
+            'epsilonErr': errEpsilonPotNs,
+            'sigmaErrFit': errSigmaPotFit,
+            'sigmaErrTransf': errSigmaPotTransf,
+            'sigmaErr': errSigmaPotNs,
+            'thresholdErrFit': thresholdErrFit,
+            'thresholdErrTransf': thresholdErrTransf,
+            'thresholdErr': thresholdErr
+        }
+        
+        potObj = {
+            'method': eva['GPDstat']['method'],
+            'parameters': potParams,
+            'paramErr': potParamErr,
+            'stationaryParams': eva['GPDstat'],
+            'objs': {}
+        }
+    else:
+        potObj = {
+            'method': eva['GPDstat']['method'],
+            'parameters': None,
+            'paramErr': None,
+            'stationaryParams': None,
+            'objs': {}
+        }
+        
+    # Final output
+    del nonStationaryEvaParams
+    nonStationaryEvaParams = [gevObj, potObj]
+    stationaryTransformData = trasfData
+    is_valid = True
+    
+    return nonStationaryEvaParams, stationaryTransformData, is_valid
+    
 def tsEvaStationary(time_and_series, **kwargs):
     # Default arguments
-    args = {
-        'minPeakDistanceInDays': -1,
-        'potEventsPerYear': 5,
-        'gevMaxima': 'annual',
-        'gevType': 'GEV',  # can be 'GEV' or 'Gumbel'
-        'doSampleData': True,
-        'potThreshold': np.nan,
-        'evdType': ['GEV', 'GPD']
-    }
-
+    minPeakDistanceInDays=kwargs.get('minPeakDistanceInDays',-1)
+    potEventsPerYear=kwargs.get('potEventsPerYear',5)
+    gevMaxima=kwargs.get('gevMaxima','annual')
+    gevType=kwargs.get('gevType','GEV')  # can be 'GEV' or 'Gumbel'
+    doSampleData=kwargs.get('doSampleData',True)
+    potThreshold=kwargs.get('potThreshold',np.nan)
+    evdType=kwargs.get('evdType',['GEV', 'GPD'])
     
     # Parse the named arguments (you can replace with your argument parser)
     for key, value in kwargs.items():
@@ -823,7 +2235,7 @@ def tsEvaStationary(time_and_series, **kwargs):
         time_and_series = time_and_series[~np.isnan(time_and_series[:, 1])]
                 
         # Replace tsEvaSampleData with a custom data sampling function
-        pointData = tsEvaSampleData(time_and_series, potEventsPerYear,minEventsPerYear,minPeakDistanceInDays,tail)
+        pointData = tsEvaSampleData(time_and_series, potEventsPerYear,minEventsPerYear,minPeakDistanceInDays,tail='high')
     else:
         if np.isnan(potThreshold):
             raise ValueError("If doSampleData==False, you need to provide a value for the potThreshold.")
@@ -916,7 +2328,8 @@ def log_likelihood(params, data):
     return np.sum(genpareto.logpdf(data, shape, loc, scale))
 
 #def tsEVstatistics(pointData, alphaCI=0.95, gevMaxima='annual', gevType='GEV', evdType=['GEV', 'GPD'], shape_bnd=[-0.5, 1]):
-def tsEVstatistics(pointData, alphaCI=0.95, gevMaxima='annual', gevType='GEV', evdType=['GEV', 'GPD'], shape_bnd=[-0.5, 1]):
+#def tsEVstatistics(pointData, alphaCI=0.95, gevMaxima='annual', gevType='GEV', evdType=['GEV', 'GPD'], shape_bnd=[-0.5, 1]):
+def tsEVstatistics(pointData, **kwargs):
     
     # Create empty data structures
     EVmeta = {}
@@ -925,14 +2338,22 @@ def tsEVstatistics(pointData, alphaCI=0.95, gevMaxima='annual', gevType='GEV', e
 
     minvars=1
     minGEVSample = 10
-    if alphaCI is None:
-        alphaCI = 0.95
-    if gevMaxima is None:
-        gevMaxima = 'annual'
-    if gevType is None:
-        gevType = 'GEV'
-    if evdType is None:
-        evdType = ['GEV', 'GPD']
+
+    alphaCI=kwargs.get('alphaCI',0.95)
+    gevMaxima=kwargs.get('gevMaxima','annual')
+    gevType=kwargs.get('gevType','GEV')
+    evdType=kwargs.get('evdType',['GEV', 'GPD'])
+
+    for key, value in kwargs.items():
+        if (key=='alphaCI'): 
+            alphaCI=value
+        if (key=='gevMaxima'): 
+            gevMaxima=value
+        if (key=='gevType'): 
+            gevType=value
+        if (key=='evdType'): 
+            evdType=value
+        
 
     # Define Tr vector
     Tr = [5, 10, 20, 50, 100, 200, 500, 1000]
@@ -1022,7 +2443,6 @@ def tsEVstatistics(pointData, alphaCI=0.95, gevMaxima='annual', gevType='GEV', e
         ksi = paramEsts[0] # shape
         sgm = paramEsts[2] # scale
         
-        # FINO QUI
         if (ksi < -.5):
             probs = [alphaCIx / 2, 1 - alphaCIx / 2]
             
@@ -1117,7 +2537,7 @@ def tsEvaComputeMonthlyMaxima(time_and_series):
     mnttmvec = pd.DataFrame({'yrs': yrs, 'mnts': mnts})
     vals_indxs = np.arange(0, len(srs))
     
-    monthly_max_indx = mnttmvec.groupby(['yrs', 'mnts']).apply(lambda x: find_max(x.index, srs)).reset_index(name='valsIndxs')
+    monthly_max_indx = mnttmvec.groupby(['yrs', 'mnts']).apply(lambda x: find_max(x.index, srs), include_groups=False).reset_index(name='valsIndxs')
     monthly_max_indx['valsIndxs'] = monthly_max_indx['valsIndxs'].astype(int)
     monthly_max_indx = monthly_max_indx.sort_values(by=['yrs', 'mnts'])['valsIndxs']
     monthly_max = srs[monthly_max_indx]
@@ -1134,7 +2554,7 @@ def tsEvaComputeAnnualMaxima(time_and_series):
     srs_indices = range(0, len(srs))
     unique_years = np.unique(years)
     df = pd.DataFrame({'years': years, 'srs_indices': srs_indices, 'srs': srs})
-    annual_max_indx = df.groupby('years').apply(lambda group: find_max(group['srs_indices'].values, df['srs'].values))
+    annual_max_indx = df.groupby('years').apply(lambda group: find_max(group['srs_indices'].values, df['srs'].values), include_groups=False)
     annual_max = [srs[i] for i in annual_max_indx]
     annual_max_date = time_stamps[annual_max_indx]
 
